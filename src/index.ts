@@ -158,66 +158,31 @@ function initializeSpotifyGenres(): void {
   }
 
   async function getAllArtistsGenres(allArtistURI: string[], src: "artist" | "recursive" | null = null): Promise<string[]> {
-    const allGenresPromises = allArtistURI.map((uri) => fetchArtistGenres(uri.split(":")[2]));
-    const allGenresCombined = await Promise.allSettled(allGenresPromises);
-
-    // Filter the fulfilled promises.
-    let allGenresFulfilled = allGenresCombined.map((item) => {
-      if (item.status === "fulfilled") {
-        return item.value;
-      }
-    }).filter(Boolean) as string[][];
-
-    let allGenres = allGenresFulfilled.flat();
-
-    if (allGenres.length === 0) {
-      let targetedArtistID: string;
-
-      if (src === "artist") {
-        targetedArtistID = allArtistURI[0].split(":")[2]
-      }
-      else if (src === "recursive") {
-        return [];
-      }
-      else {
-        targetedArtistID = Spicetify.Player.data.item.metadata.artist_uri.split(":")[2]
-      }
-
-      const artistResponse: {
-        related_artists: {
-          artists: Array<{ uri: string }>
-        }
-      } | null = await Spicetify.CosmosAsync.get(`wg://artist/v1/${targetedArtistID}/desktop?format=json`).catch(() => null);
-      
-      if (!artistResponse) return [];
-      if (!artistResponse.related_artists?.artists) return [];
-
-      // Get the URI of every artists.
-      const tempAllArtistURI = artistResponse.related_artists.artists.map((artist) => artist.uri);
-
-      let count = 5;
-      while (count !== 25) {
-        allGenres = await getAllArtistsGenres(tempAllArtistURI.slice(count - 5, count), "recursive");
-        
-        if (allGenres.length != 0) {
-          count = 25
-        }
-        else {
-          count += 5
-        }
-      }
+    // Get the current track's artist and title.
+    const metadata = Spicetify.Player.data.item.metadata;
+    const artistName = metadata.artist_name;
+    const trackName = metadata.title;
+  
+    const response = await fetchDataFromLastFM(artistName, trackName);
+    console.log("LastFM response:", response);
+    if (!response || !response.track.toptags.tag) {
+      console.warn(LOG_PREFIX, "No genres (tags) found from Last.FM for the current track.");
+      return [];
     }
-
-    allGenres = Array.from(new Set(allGenres));
-    if (!src) allGenresForPopupModal = allGenres;
-
-    return allGenres.slice(0, 5);
+  
+    // Extract genres (tags) from the Last.FM response.
+    const tags = response.track.toptags.tag
+      .map((tag) => tag.name) // Get the tag names.
+      .filter((tag) => !/\d/.test(tag)) // Filter out tags with numbers (optional).
+      .slice(0, 5); // Limit to the top 5 tags.
+  
+    return tags;
   }
+  
 
   async function injectGenre() {
     let allArtistURI = getAllArtistsURIFromCurrentTrack();
     let allGenres = await getAllArtistsGenres(allArtistURI);
-
     if (!allGenres) {
       console.warn(LOG_PREFIX, "No genres found for the current track. Removing...");
       allGenresForPopupModal = []
@@ -225,37 +190,25 @@ function initializeSpotifyGenres(): void {
       return;
     }
 
-    const soundOfSpotifyPlaylistsPromises = await Promise.all(allGenres.map((genre) => fetchSoundOfSpotifyPlaylist(genre)))
-    const soundOfSpotifyPlaylists = soundOfSpotifyPlaylistsPromises.filter((item) => item.uri !== null) as Array<{
-      uri: string,
-      genre: string
-    }>;
+    // Generate the HTML for genres from Last.FM.
+    const allGenreElements = allGenres.map((genre) => {
+      return `<span style="color: var(--spice-subtext); font-size: 12px">${genre.replace(
+        /(^\w{1})|([\s-]+\w{1})/g,
+        (letter) => letter.toUpperCase()
+      )}</span>`;
+    });
 
-    const allGenreElementsCombined = soundOfSpotifyPlaylists.map((playlist) => [
-      [
-        `<a href="${playlist.uri.includes("|||") ? '#"' + ' onclick="genrePopup()" ' : playlist.uri + '"'} style="color: var(--spice-subtext); font-size: 12px">${playlist.genre.replace(
-          /(^\w{1})|([\s-]+\w{1})/g,
-          (letter) => letter.toUpperCase()
-        )}</a>`,
-      ],
-      [`<span>, </span>`]
-    ]);
-
-    const allGenreElements = allGenreElementsCombined.flat(Infinity);
-    if (allGenreElements[allGenreElements.length - 1] == "<span>, </span>") {
-      allGenreElements.pop()
-    }
-
-    const allGenreElementsHTML = allGenreElements.join("")
+    const allGenreElementsHTML = allGenreElements.join(", ");
     if (genreContainer !== null) genreContainer.innerHTML = allGenreElementsHTML;
 
     await assignInfoContainer();
     if (genreContainer !== null && infoContainer !== null) {
       // Fix the grid for the info container.
       infoContainer.style.gridTemplate = '"title title" "badges subtitle" "genres genres" / auto 1fr auto';
-      infoContainer.appendChild(genreContainer)
+      infoContainer.appendChild(genreContainer);
     }
   }
+
 
   const settingsMenuCSS = React.createElement(
       "style",
